@@ -866,23 +866,6 @@ std::string get_package_share_path(const std::string& package_name) {
 #endif
 }
 
-std::string get_package_source_directory() {
-    // 获取当前源文件的绝对路径
-    std::filesystem::path current_file(__FILE__);
-    
-    // 回溯到包根目录（包含package.xml的目录）
-    auto path = current_file.parent_path();
-    while (!path.empty() && !std::filesystem::exists(path / "package.xml")) {
-        path = path.parent_path();
-    }
-    
-    if (path.empty()) {
-        throw std::runtime_error("Failed to locate package root directory");
-    }
-    
-    return path.string();
-}
-
 std::string get_package_path(const std::string& package_name) {
     #ifdef ROS2
         return ament_index_cpp::get_package_share_directory(package_name);
@@ -2102,7 +2085,7 @@ int main(int argc, char *argv[])
     // Response rc convention (all 4 services):
     //   0      success                          (success = true)
     //   400..  device-side error, see lidar_ae_error_e / lidar_rgb_error_e
-    //   -100   driver has not opened the device yet
+    //   -100   driver has not finished initializing the device yet
     //   <0     other SDK-side error (USB / timeout / malformed reply)
     //
     // Concurrency: the underlying SDK calls are serialised by an
@@ -2113,7 +2096,7 @@ int main(int argc, char *argv[])
         "/odin1/get_ae",
         [](const std::shared_ptr<odin_ros_driver::srv::GetAe::Request>  /*req*/,
                  std::shared_ptr<odin_ros_driver::srv::GetAe::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2135,7 +2118,7 @@ int main(int argc, char *argv[])
         "/odin1/get_awb",
         [](const std::shared_ptr<odin_ros_driver::srv::GetAwb::Request>  /*req*/,
                  std::shared_ptr<odin_ros_driver::srv::GetAwb::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2157,7 +2140,7 @@ int main(int argc, char *argv[])
         "/odin1/set_ae",
         [](const std::shared_ptr<odin_ros_driver::srv::SetAe::Request>  req,
                  std::shared_ptr<odin_ros_driver::srv::SetAe::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2174,7 +2157,7 @@ int main(int argc, char *argv[])
         "/odin1/set_awb",
         [](const std::shared_ptr<odin_ros_driver::srv::SetAwb::Request>  req,
                  std::shared_ptr<odin_ros_driver::srv::SetAwb::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2191,7 +2174,7 @@ int main(int argc, char *argv[])
         "/odin1/get_device_logs",
         [](const std::shared_ptr<odin_ros_driver::srv::GetDeviceLogs::Request>  req,
                  std::shared_ptr<odin_ros_driver::srv::GetDeviceLogs::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2205,7 +2188,7 @@ int main(int argc, char *argv[])
         "/odin1/save_map",
         [](const std::shared_ptr<odin_ros_driver::srv::SaveMap::Request>  req,
                  std::shared_ptr<odin_ros_driver::srv::SaveMap::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2258,7 +2241,7 @@ int main(int argc, char *argv[])
         "/odin1/reset_algo",
         [](const std::shared_ptr<odin_ros_driver::srv::ResetAlgo::Request>  req,
                  std::shared_ptr<odin_ros_driver::srv::ResetAlgo::Response> res) {
-            if (odinDevice == nullptr) {
+            if (!deviceConnected.load() || odinDevice == nullptr) {
                 res->success = false;
                 res->rc = -100;
                 return;
@@ -2487,14 +2470,13 @@ int main(int argc, char *argv[])
     signal(SIGTERM, signal_handler);
 
     try {
-    #ifdef ROS2
-        std::string package_path = get_package_source_directory();
-        std::cout << "package_path: " << package_path << std::endl;
-    #else
-    	std::string package_path = get_package_share_path("odin_ros_driver");
-    #endif
+        std::string package_path = get_package_share_path("odin_ros_driver");
         std::string config_dir = package_path + "/config";
         std::string config_file = config_dir + "/control_command.yaml";
+#ifdef ROS2
+        config_file = node->declare_parameter<std::string>("config_file", config_file);
+#endif
+        std::cout << "config_file: " << config_file << std::endl;
 
         // Initialize command file path to /tmp/odin_command.txt
         g_command_file_path = "/tmp/odin_command.txt";
@@ -2703,6 +2685,8 @@ int main(int argc, char *argv[])
             }
             
             #ifdef ROS2
+                // Keep parameter services responsive during device initialization.
+                rclcpp::spin_some(node);
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             #else
                 ros::Duration(1.0).sleep();

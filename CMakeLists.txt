@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.8)
 project(odin_ros_driver)
 
 
@@ -41,22 +41,17 @@ endif()
 
 message(STATUS "Build system: ${ROS_VERSION}")
 
-# Platform detection
-execute_process(
-    COMMAND uname -m
-    OUTPUT_VARIABLE ARCH
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-if(ARCH STREQUAL "x86_64")
-    set(TARGET_PLATFORM "x86")
-    message(STATUS "Detected x86_64 architecture")
-elseif(ARCH MATCHES "arm|aarch64")
+# Select the SDK for the target, never for the machine running CMake.
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" ODIN_TARGET_PROCESSOR)
+if(ODIN_TARGET_PROCESSOR MATCHES "^(aarch64|arm64)$")
     set(TARGET_PLATFORM "arm")
-    message(STATUS "Detected ARM architecture: ${ARCH}")
+    message(STATUS "Detected target ARM architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+elseif(ODIN_TARGET_PROCESSOR MATCHES "^(x86_64|amd64)$")
+    set(TARGET_PLATFORM "x86")
+    message(STATUS "Detected target x86_64 architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 else()
-    message(WARNING "Unsupported architecture: ${ARCH}. Using default settings")
-    set(TARGET_PLATFORM "unknown")
+    message(FATAL_ERROR
+        "Unsupported target architecture: ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 
 # Set library path
@@ -70,27 +65,13 @@ else()
     set(LYD_HOST_API_LIB_NAME "lydHostApi_amd")
 endif()
 
-# Find precompiled lydHostApi library
-find_library(LYD_HOST_API_LIB
-    NAMES 
-        ${LYD_HOST_API_LIB_NAME}
-        lib${LYD_HOST_API_LIB_NAME}.a
-        lib${LYD_HOST_API_LIB_NAME}.so
-    PATHS ${LIB_DIR}
-    NO_DEFAULT_PATH
-)
-
-if(LYD_HOST_API_LIB)
-    message(STATUS "Found lydHostApi library: ${LYD_HOST_API_LIB}")
-else()
-    file(GLOB LIB_FILES "${LIB_DIR}/lib${LYD_HOST_API_LIB_NAME}.*")
-    if(LIB_FILES)
-        message(STATUS "Found library files: ${LIB_FILES}")
-        set(LYD_HOST_API_LIB ${LIB_FILES})
-    else()
-        message(FATAL_ERROR "Could not find precompiled lydHostApi library in ${LIB_DIR}")
-    endif()
+# The archive ships with the source; do not re-root it into CMAKE_SYSROOT
+# or reuse a find_library cache entry from another architecture.
+set(LYD_HOST_API_LIB "${LIB_DIR}/lib${LYD_HOST_API_LIB_NAME}.a")
+if(NOT EXISTS "${LYD_HOST_API_LIB}")
+    message(FATAL_ERROR "Missing target SDK archive: ${LYD_HOST_API_LIB}")
 endif()
+message(STATUS "Found lydHostApi library: ${LYD_HOST_API_LIB}")
 
 # Set common compile options
 set(CMAKE_CXX_STANDARD 17)
@@ -117,10 +98,10 @@ endif()
 find_package(PkgConfig REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common)
 find_package(yaml-cpp REQUIRED)
 find_package(OpenSSL REQUIRED)
-pkg_check_modules(LIBUSB REQUIRED libusb-1.0)
+pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
 # Shared include directories
 include_directories(
@@ -129,7 +110,6 @@ include_directories(
     ${OpenCV_INCLUDE_DIRS}
     ${PCL_INCLUDE_DIRS}
     ${yaml-cpp_INCLUDE_DIR}
-    ${LIBUSB_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
@@ -139,7 +119,7 @@ set(COMMON_LIBS
     ${PCL_LIBRARIES}
     ${yaml-cpp_LIBRARIES}
     ${OPENSSL_LIBRARIES}
-    ${LIBUSB_LIBRARIES}
+    PkgConfig::LIBUSB
     pthread
     rt
     ${CMAKE_DL_LIBS}
@@ -200,11 +180,9 @@ if(ROS_VERSION STREQUAL "ROS1")
         ${catkin_LIBRARIES}
         ${COMMON_LIBS}
 	${LYD_HOST_API_LIB}
-    	${LIBUSB_LIBRARIES}
     	yaml-cpp
     	${OpenCV_LIBS}
     	pthread  
-        usb-1.0
     )
     # Make sure the AE/AWB srv headers are generated before host_sdk_sample
     # is compiled (catkin's generate_messages produces this target).
@@ -312,7 +290,6 @@ elseif(ROS_VERSION STREQUAL "ROS2")
     target_link_libraries(host_sdk_sample
         ${COMMON_LIBS}
         yaml-cpp
-        usb-1.0
     )
 
     # Link the generated AE/AWB srv typesupport into host_sdk_sample so it
@@ -376,6 +353,7 @@ elseif(ROS_VERSION STREQUAL "ROS2")
         image_transport
         pcl_conversions
         message_filters
+        ament_index_cpp
     )
 
     add_library(cloud_reprojector_ros2 src/cloud_reprojector.cpp)
@@ -401,6 +379,7 @@ elseif(ROS_VERSION STREQUAL "ROS2")
         image_transport
         pcl_conversions
         message_filters
+        ament_index_cpp
     )
 
     add_executable(image_overlay_node src/image_overlay_node.cpp)
@@ -492,9 +471,9 @@ endif()
 # ARM platform specific link options
 if(TARGET_PLATFORM STREQUAL "arm")
     set_target_properties(host_sdk_sample PROPERTIES
-        LINK_FLAGS "-Wl,--no-as-needed -Wl,--rpath=${LIB_DIR}"
+        LINK_FLAGS "-Wl,--no-as-needed"
     )
-    message(STATUS "Adding ARM-specific link options and RPATH")
+    message(STATUS "Adding ARM-specific link options")
 endif()
 
 # Add debug information
@@ -505,4 +484,3 @@ message(STATUS "Target platform: ${TARGET_PLATFORM}")
 message(STATUS "lydHostApi library: ${LYD_HOST_API_LIB}")
 message(STATUS "libusb library: ${LIBUSB_LIBRARIES}")
 message(STATUS "=======================================")
-

@@ -65,8 +65,6 @@ build_workspace() {
     
     echo -e "${YELLOW}Starting ROS2 project build...${NC}"
 
-    cd $WS_DIR
-    rm -rf build install log
     # Ensure ROS2 environment is loaded.
     # 1) Prefer the currently active distro (ROS_DISTRO env var) if its setup.bash exists.
     # 2) Otherwise probe a known list of ROS2 distros from newest to oldest.
